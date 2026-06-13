@@ -2,14 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
 export default function NavBar({ userName }: { userName?: string }) {
   const router = useRouter();
-  const supabase = createClient();
 
   async function handleSignOut() {
-    await supabase.auth.signOut();
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Sign out error:", error);
+    }
     router.push("/login");
     router.refresh();
   }

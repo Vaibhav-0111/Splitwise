@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 export function createClient() {
   const cookieStore = cookies();
 
-  return createServerClient(
+  const client = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -30,4 +30,34 @@ export function createClient() {
       },
     }
   );
+
+  const firebaseUid = cookieStore.get("firebase_uid")?.value;
+  const firebaseEmail = cookieStore.get("firebase_email")?.value ?? null;
+  const firebaseDisplayName = cookieStore.get("firebase_display_name")?.value ?? null;
+
+  if (firebaseUid) {
+    const user = {
+      id: firebaseUid,
+      email: firebaseEmail,
+      user_metadata: {
+        display_name: firebaseDisplayName,
+      },
+    };
+
+    (client.auth as any).getUser = async () => ({
+      data: { user },
+      error: null,
+    });
+
+    (client.auth as any).getSession = async () => ({
+      data: {
+        session: {
+          user,
+        },
+      },
+      error: null,
+    });
+  }
+
+  return client;
 }
