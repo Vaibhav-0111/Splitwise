@@ -1,0 +1,15 @@
+description,amount,currency,paid_by_email,expense_date,split_type,participants,split_values
+Groceries,60,USD,alice@example.com,2026-05-01,equal,alice@example.com;bob@example.com,
+Dinner at Olive Garden,90,EUR,bob@example.com,2026-05-02,equal,alice@example.com;bob@example.com;carol@example.com,
+,45,USD,alice@example.com,2026-05-03,equal,alice@example.com;bob@example.com,
+Taxi to airport,abc,USD,alice@example.com,2026-05-03,equal,alice@example.com;bob@example.com,
+Movie tickets,40,USD,dave@example.com,2026-05-04,equal,alice@example.com;bob@example.com,
+Pizza night,50,USD,carol@example.com,2026-05-05,equal,alice@example.com;bob@example.com;dave@example.com,
+Hotel booking,300,USD,alice@example.com,2026-05-06,custom,alice@example.com;bob@example.com;carol@example.com,
+Utilities,120,USD,bob@example.com,2026-05-07,unequal,alice@example.com;bob@example.com;carol@example.com,40;40
+Rent split,1000,USD,alice@example.com,2026-05-08,percentage,alice@example.com;bob@example.com;carol@example.com,50;30;30
+Flights,600,USD,carol@example.com,2026-05-09,unequal,alice@example.com;bob@example.com;carol@example.com,200;200;150
+Groceries,60,USD,alice@example.com,2026-05-01,equal,alice@example.com;bob@example.com,
+Snacks,25,USD,bob@example.com,not-a-date,equal,alice@example.com;bob@example.com;carol@example.com,
+Coffee run,15,USD,alice@example.com,2026-05-10,shares,alice@example.com;bob@example.com,2;1
+Parking,-20,USD,bob@example.com,2026-05-11,equal,alice@example.com;bob@example.com,
