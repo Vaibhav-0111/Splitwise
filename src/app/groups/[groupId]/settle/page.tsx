@@ -4,7 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import NavBar from "@/components/NavBar";
 import SettleUpForm from "@/components/SettleUpForm";
 
-export default async function SettlePage({ params }: { params: { groupId: string } }) {
+export default async function SettlePage({ params }: { params: Promise<{ groupId: string }> }) {
+  const { groupId } = await params;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -12,7 +13,7 @@ export default async function SettlePage({ params }: { params: { groupId: string
   const { data: group } = await supabase
     .from("groups")
     .select("id, name")
-    .eq("id", params.groupId)
+    .eq("id", groupId)
     .single();
   if (!group) notFound();
 

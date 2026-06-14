@@ -8,8 +8,9 @@ import DeleteExpenseButton from "@/components/DeleteExpenseButton";
 export default async function ExpenseDetailPage({
   params,
 }: {
-  params: { groupId: string; expenseId: string };
+  params: Promise<{ groupId: string; expenseId: string }>;
 }) {
+  const { groupId, expenseId } = await params;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -23,7 +24,7 @@ export default async function ExpenseDetailPage({
   const { data: group } = await supabase
     .from("groups")
     .select("id, name")
-    .eq("id", params.groupId)
+    .eq("id", groupId)
     .single();
   if (!group) notFound();
 
@@ -32,7 +33,7 @@ export default async function ExpenseDetailPage({
     .select(
       "id, description, amount, currency, split_type, created_at, created_by, paid_by, payer:profiles!expenses_paid_by_fkey(display_name)"
     )
-    .eq("id", params.expenseId)
+    .eq("id", expenseId)
     .single();
   if (!expense) notFound();
 

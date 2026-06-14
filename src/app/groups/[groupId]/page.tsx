@@ -5,7 +5,8 @@ import NavBar from "@/components/NavBar";
 import AddMemberForm from "@/components/AddMemberForm";
 import RemoveMemberButton from "@/components/RemoveMemberButton";
 
-export default async function GroupPage({ params }: { params: { groupId: string } }) {
+export default async function GroupPage({ params }: { params: Promise<{ groupId: string }> }) {
+  const { groupId } = await params;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -13,7 +14,7 @@ export default async function GroupPage({ params }: { params: { groupId: string 
   const { data: group } = await supabase
     .from("groups")
     .select("id, name, created_by")
-    .eq("id", params.groupId)
+    .eq("id", groupId)
     .single();
 
   if (!group) notFound();

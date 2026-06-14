@@ -21,8 +21,9 @@ const ANOMALY_LABELS: Record<string, string> = {
 export default async function ImportReportPage({
   params,
 }: {
-  params: { groupId: string; reportId: string };
+  params: Promise<{ groupId: string; reportId: string }>;
 }) {
+  const { groupId, reportId } = await params;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
@@ -30,7 +31,7 @@ export default async function ImportReportPage({
   const { data: group } = await supabase
     .from("groups")
     .select("id, name")
-    .eq("id", params.groupId)
+    .eq("id", groupId)
     .single();
   if (!group) notFound();
 
@@ -43,7 +44,7 @@ export default async function ImportReportPage({
   const { data: report } = await supabase
     .from("import_reports")
     .select("*")
-    .eq("id", params.reportId)
+    .eq("id", reportId)
     .single();
   if (!report) notFound();
 
