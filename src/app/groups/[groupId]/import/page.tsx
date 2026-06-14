@@ -5,7 +5,7 @@ import NavBar from "@/components/NavBar";
 import CsvImportForm from "@/components/CsvImportForm";
 
 export default async function ImportPage({ params }: { params: { groupId: string } }) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 

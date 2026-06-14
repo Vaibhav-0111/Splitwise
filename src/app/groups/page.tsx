@@ -5,7 +5,7 @@ import NavBar from "@/components/NavBar";
 import CreateGroupForm from "@/components/CreateGroupForm";
 
 export default async function GroupsPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 

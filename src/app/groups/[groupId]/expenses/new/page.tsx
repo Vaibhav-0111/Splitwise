@@ -5,7 +5,7 @@ import NavBar from "@/components/NavBar";
 import AddExpenseForm from "@/components/AddExpenseForm";
 
 export default async function NewExpensePage({ params }: { params: { groupId: string } }) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
