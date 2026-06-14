@@ -19,14 +19,36 @@ export default function NavBar({ userName }: { userName?: string }) {
   }
 
   return (
-    <nav className="bg-surface border-b border-border sticky top-0 z-10">
-      <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-        <Link href="/groups" className="text-xl font-bold text-primary">
+    <nav className="glass-strong sticky top-0 z-50 border-b border-white/5">
+      <div className="max-w-6xl mx-auto px-4 py-3.5 flex items-center justify-between">
+        <Link
+          href="/dashboard"
+          className="text-xl font-bold font-display gradient-text-static hover-scale inline-block"
+        >
           Splitsy
         </Link>
-        <div className="flex items-center gap-4">
-          {userName && <span className="text-sm text-muted-foreground">Hi, {userName}</span>}
-          <button onClick={handleSignOut} className="text-sm text-muted-foreground hover:text-foreground">
+        <div className="flex items-center gap-5">
+          {userName && (
+            <span className="text-sm text-slate-400 hidden sm:inline">
+              Hi, <span className="text-slate-200 font-medium">{userName}</span>
+            </span>
+          )}
+          <Link
+            href="/dashboard"
+            className="text-sm text-slate-400 hover:text-primary transition-colors"
+          >
+            Dashboard
+          </Link>
+          <Link
+            href="/groups"
+            className="text-sm text-slate-400 hover:text-primary transition-colors"
+          >
+            Groups
+          </Link>
+          <button
+            onClick={handleSignOut}
+            className="text-sm text-slate-500 hover:text-slate-200 transition-colors px-3 py-1.5 rounded-lg hover:bg-white/5"
+          >
             Sign out
           </button>
         </div>
