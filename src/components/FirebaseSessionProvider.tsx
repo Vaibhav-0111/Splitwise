@@ -41,7 +41,7 @@ export default function FirebaseSessionProvider({
         const syncProfile = async () => {
           try {
             const uuid = deterministicUuid(user.uid);
-            const supabase = await createClient();
+            const supabase = createClient();
             const { data: existingProfile } = await supabase
               .from("profiles")
               .select("id")

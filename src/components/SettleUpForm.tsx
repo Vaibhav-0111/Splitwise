@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 
 type Member = { id: string; display_name: string };
 
-export default async function SettleUpForm({
+export default function SettleUpForm({
   groupId,
   members,
   currentUserId,
@@ -16,7 +16,7 @@ export default async function SettleUpForm({
   currentUserId: string;
 }) {
   const router = useRouter();
-  const supabase = await createClient();
+  const supabase = createClient();
 
   const [fromUser, setFromUser] = useState(currentUserId);
   const [toUser, setToUser] = useState(

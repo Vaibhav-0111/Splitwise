@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { ExpenseMessage } from "@/lib/types";
 
-export default async function ExpenseChat({
+export default function ExpenseChat({
   expenseId,
   currentUserId,
   initialMessages,
@@ -13,7 +13,7 @@ export default async function ExpenseChat({
   currentUserId: string;
   initialMessages: ExpenseMessage[];
 }) {
-  const supabase = await createClient();
+  const supabase = createClient();
   const [messages, setMessages] = useState<ExpenseMessage[]>(initialMessages);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);

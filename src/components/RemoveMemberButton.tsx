@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-export default async function RemoveMemberButton({
+export default function RemoveMemberButton({
   groupId,
   userId,
 }: {
@@ -11,7 +11,7 @@ export default async function RemoveMemberButton({
   userId: string;
 }) {
   const router = useRouter();
-  const supabase = await createClient();
+  const supabase = createClient();
 
   async function handleRemove() {
     if (!confirm("Remove this member from the group?")) return;

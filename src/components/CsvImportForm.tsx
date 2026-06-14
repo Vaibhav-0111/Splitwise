@@ -21,7 +21,7 @@ const ANOMALY_LABELS: Record<string, string> = {
   invalid_date: "Invalid date",
 };
 
-export default async function CsvImportForm({
+export default function CsvImportForm({
   groupId,
   members,
 }: {
@@ -29,7 +29,7 @@ export default async function CsvImportForm({
   members: MemberLookup[];
 }) {
   const router = useRouter();
-  const supabase = await createClient();
+  const supabase = createClient();
 
   const [fileName, setFileName] = useState<string | null>(null);
   const [results, setResults] = useState<RowResult[] | null>(null);
