@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-export default function DeleteExpenseButton({
+export default async function DeleteExpenseButton({
   expenseId,
   groupId,
 }: {
@@ -11,7 +11,7 @@ export default function DeleteExpenseButton({
   groupId: string;
 }) {
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = await createClient();
 
   async function handleDelete() {
     if (!confirm("Delete this expense? This cannot be undone.")) return;

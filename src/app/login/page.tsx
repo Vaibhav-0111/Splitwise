@@ -34,7 +34,7 @@ export default function LoginPage() {
   const syncSupabaseProfile = async (uid: string, emailStr: string | null, displayName: string | null) => {
     try {
       const uuid = deterministicUuid(uid);
-      const supabase = createClient();
+      const supabase = await createClient();
       
       const { data: existingProfile } = await supabase
         .from("profiles")

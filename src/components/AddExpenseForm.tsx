@@ -7,7 +7,7 @@ import type { SplitType } from "@/lib/types";
 
 type Member = { id: string; display_name: string };
 
-export default function AddExpenseForm({
+export default async function AddExpenseForm({
   groupId,
   currentUserId,
   members,
@@ -17,7 +17,7 @@ export default function AddExpenseForm({
   members: Member[];
 }) {
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");

@@ -23,7 +23,7 @@ export default async function ImportReportPage({
 }: {
   params: { groupId: string; reportId: string };
 }) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 

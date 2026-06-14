@@ -6,7 +6,7 @@ import AddMemberForm from "@/components/AddMemberForm";
 import RemoveMemberButton from "@/components/RemoveMemberButton";
 
 export default async function GroupPage({ params }: { params: { groupId: string } }) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 

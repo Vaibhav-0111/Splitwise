@@ -4,9 +4,9 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-export default function AddMemberForm({ groupId }: { groupId: string }) {
+export default async function AddMemberForm({ groupId }: { groupId: string }) {
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = await createClient();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
