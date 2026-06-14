@@ -30,222 +30,277 @@ export default function DashboardPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalActionType, setModalActionType] = useState<"expense" | "settle" | "import">("expense");
 
-  // ── Auth check and dynamic data fetching ──────────────────────────────────────────────
+  // ── Auth check and dynamic data fetching with Realtime updates ──────────────────────────────
   useEffect(() => {
+    const supabase = createClient();
+    let supabaseChannel: any = null;
+
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         const uid = user.uid;
         setDisplayName(user.displayName || user.email?.split("@")[0] || "User");
         setEmail(user.email || "");
 
-        const supabase = createClient();
         const uuid = deterministicUuid(uid);
         setUserUuid(uuid);
 
-        try {
-          // 1. Fetch groups/memberships the user belongs to
-          const { data: memberships, error: membershipsError } = await supabase
-            .from("group_members")
-            .select("group_id, groups(id, name, created_at)")
-            .eq("user_id", uuid);
+        const fetchDashboardData = async () => {
+          try {
+            // 1. Fetch groups/memberships the user belongs to
+            const { data: memberships, error: membershipsError } = await supabase
+              .from("group_members")
+              .select("group_id, groups(id, name, created_at)")
+              .eq("user_id", uuid);
 
-          if (membershipsError) throw membershipsError;
+            if (membershipsError) throw membershipsError;
 
-          const userGroups = (memberships ?? [])
-            .map((m: any) => m.groups)
-            .filter(Boolean);
+            const userGroups = (memberships ?? [])
+              .map((m: any) => m.groups)
+              .filter(Boolean);
 
-          setGroups(userGroups);
-          setActiveGroupsCount(userGroups.length);
+            setGroups(userGroups);
+            setActiveGroupsCount(userGroups.length);
 
-          const groupIds = userGroups.map((g: any) => g.id);
+            const groupIds = userGroups.map((g: any) => g.id);
 
-          if (groupIds.length > 0) {
-            // 2. Fetch balances per group
-            const balancesMap: Record<string, number> = {};
-            for (const id of groupIds) balancesMap[id] = 0;
+            if (groupIds.length > 0) {
+              // 2. Fetch balances per group
+              const balancesMap: Record<string, number> = {};
+              for (const id of groupIds) balancesMap[id] = 0;
 
-            const [paidRes, owedRes, receivedRes, paidSettleRes] = await Promise.all([
-              supabase.from("expenses").select("group_id, amount").eq("paid_by", uuid).in("group_id", groupIds),
-              supabase
-                .from("expense_splits")
-                .select("amount, expenses!inner(group_id)")
-                .eq("user_id", uuid)
-                .in("expenses.group_id", groupIds),
-              supabase.from("settlements").select("group_id, amount").eq("to_user", uuid).in("group_id", groupIds),
-              supabase.from("settlements").select("group_id, amount").eq("from_user", uuid).in("group_id", groupIds),
-            ]);
+              const [paidRes, owedRes, receivedRes, paidSettleRes] = await Promise.all([
+                supabase.from("expenses").select("group_id, amount").eq("paid_by", uuid).in("group_id", groupIds),
+                supabase
+                  .from("expense_splits")
+                  .select("amount, expenses!inner(group_id)")
+                  .eq("user_id", uuid)
+                  .in("expenses.group_id", groupIds),
+                supabase.from("settlements").select("group_id, amount").eq("to_user", uuid).in("group_id", groupIds),
+                supabase.from("settlements").select("group_id, amount").eq("from_user", uuid).in("group_id", groupIds),
+              ]);
 
-            for (const row of paidRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
-            for (const row of (owedRes.data ?? []) as any[]) {
-              const gid = row.expenses?.group_id;
-              if (gid) balancesMap[gid] -= Number(row.amount);
-            }
-            for (const row of receivedRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
-            for (const row of paidSettleRes.data ?? []) balancesMap[row.group_id] -= Number(row.amount);
+              for (const row of paidRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
+              for (const row of (owedRes.data ?? []) as any[]) {
+                const gid = row.expenses?.group_id;
+                if (gid) balancesMap[gid] -= Number(row.amount);
+              }
+              for (const row of receivedRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
+              for (const row of paidSettleRes.data ?? []) balancesMap[row.group_id] -= Number(row.amount);
 
-            // Sum all net balances
-            const sumBalance = Object.values(balancesMap).reduce((sum, bal) => sum + bal, 0);
-            setTotalBalance(sumBalance);
+              // Sum all net balances
+              const sumBalance = Object.values(balancesMap).reduce((sum, bal) => sum + bal, 0);
+              setTotalBalance(sumBalance);
 
-            // 3. Fetch current month's spending
-            const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-            const { data: monthlySplits, error: monthlyError } = await supabase
-              .from("expense_splits")
-              .select("amount, expenses!inner(expense_date)")
-              .eq("user_id", uuid)
-              .gte("expenses.expense_date", startOfMonth);
-
-            if (monthlyError) throw monthlyError;
-
-            const sumSpending = (monthlySplits ?? []).reduce((sum: number, s: any) => sum + Number(s.amount), 0);
-            setThisMonthSpending(sumSpending);
-
-            // 4. Fetch recent activities (top 5 recent expenses/settlements across user's groups)
-            const [recentExpensesRes, recentSettlementsRes] = await Promise.all([
-              supabase
-                .from("expenses")
-                .select("id, description, amount, currency, expense_date, created_at, group_id, paid_by, groups(name), payer:profiles!expenses_paid_by_fkey(display_name)")
-                .in("group_id", groupIds)
-                .order("created_at", { ascending: false })
-                .limit(5),
-              supabase
-                .from("settlements")
-                .select("id, amount, note, created_at, group_id, from_user, to_user, groups(name), from:profiles!settlements_from_user_fkey(display_name), to:profiles!settlements_to_user_fkey(display_name)")
-                .in("group_id", groupIds)
-                .order("created_at", { ascending: false })
-                .limit(5)
-            ]);
-
-            const activities = [
-              ...(recentExpensesRes.data ?? []).map((e: any) => ({
-                id: e.id,
-                type: "expense",
-                description: e.description,
-                amount: Number(e.amount),
-                currency: e.currency || "USD",
-                date: e.expense_date || e.created_at,
-                groupName: e.groups?.name,
-                groupId: e.group_id,
-                payerName: e.payer?.display_name,
-                paidBy: e.paid_by,
-              })),
-              ...(recentSettlementsRes.data ?? []).map((s: any) => ({
-                id: s.id,
-                type: "settlement",
-                description: `${s.from?.display_name} paid ${s.to?.display_name}`,
-                amount: Number(s.amount),
-                currency: "USD",
-                date: s.created_at,
-                groupName: s.groups?.name,
-                groupId: s.group_id,
-                fromUser: s.from_user,
-                toUser: s.to_user,
-              })),
-            ];
-
-            activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-            setRecentActivity(activities.slice(0, 5));
-
-            // 5. Generate historical trend data for the last 6 months
-            const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-            const last6MonthsData = [];
-            for (let i = 5; i >= 0; i--) {
-              const d = new Date();
-              d.setDate(1); // avoid end of month overflow
-              d.setMonth(d.getMonth() - i);
-              last6MonthsData.push({
-                month: d.getMonth(),
-                year: d.getFullYear(),
-                label: monthNames[d.getMonth()],
-                start: new Date(d.getFullYear(), d.getMonth(), 1).toISOString(),
-                end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).toISOString(),
-                spend: 0,
-                netChange: 0,
-              });
-            }
-            setMonthsLabels(last6MonthsData.map(m => m.label));
-
-            const rangeStart = last6MonthsData[0].start;
-            const rangeEnd = last6MonthsData[5].end;
-
-            const [rangeSplitsRes, rangePaidRes, rangeReceivedSettleRes, rangePaidSettleRes] = await Promise.all([
-              supabase
+              // 3. Fetch current month's spending
+              const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+              const { data: monthlySplits, error: monthlyError } = await supabase
                 .from("expense_splits")
                 .select("amount, expenses!inner(expense_date)")
                 .eq("user_id", uuid)
-                .in("expenses.group_id", groupIds)
-                .gte("expenses.expense_date", rangeStart)
-                .lte("expenses.expense_date", rangeEnd),
-              supabase
-                .from("expenses")
-                .select("amount, expense_date")
-                .eq("paid_by", uuid)
-                .in("group_id", groupIds)
-                .gte("expense_date", rangeStart)
-                .lte("expense_date", rangeEnd),
-              supabase
-                .from("settlements")
-                .select("amount, created_at")
-                .eq("to_user", uuid)
-                .in("group_id", groupIds)
-                .gte("created_at", rangeStart)
-                .lte("created_at", rangeEnd),
-              supabase
-                .from("settlements")
-                .select("amount, created_at")
-                .eq("from_user", uuid)
-                .in("group_id", groupIds)
-                .gte("created_at", rangeStart)
-                .lte("created_at", rangeEnd),
-            ]);
+                .gte("expenses.expense_date", startOfMonth);
 
-            for (const split of (rangeSplitsRes.data ?? []) as any[]) {
-              const date = new Date(split.expenses?.expense_date);
-              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-              if (mIdx !== -1) {
-                last6MonthsData[mIdx].spend += Number(split.amount);
-                last6MonthsData[mIdx].netChange -= Number(split.amount);
+              if (monthlyError) throw monthlyError;
+
+              const sumSpending = (monthlySplits ?? []).reduce((sum: number, s: any) => sum + Number(s.amount), 0);
+              setThisMonthSpending(sumSpending);
+
+              // 4. Fetch recent activities (top 5 recent expenses/settlements across user's groups)
+              const [recentExpensesRes, recentSettlementsRes] = await Promise.all([
+                supabase
+                  .from("expenses")
+                  .select("id, description, amount, currency, expense_date, created_at, group_id, paid_by, groups(name), payer:profiles!expenses_paid_by_fkey(display_name)")
+                  .in("group_id", groupIds)
+                  .order("created_at", { ascending: false })
+                  .limit(5),
+                supabase
+                  .from("settlements")
+                  .select("id, amount, note, created_at, group_id, from_user, to_user, groups(name), from:profiles!settlements_from_user_fkey(display_name), to:profiles!settlements_to_user_fkey(display_name)")
+                  .in("group_id", groupIds)
+                  .order("created_at", { ascending: false })
+                  .limit(5)
+              ]);
+
+              const activities = [
+                ...(recentExpensesRes.data ?? []).map((e: any) => ({
+                  id: e.id,
+                  type: "expense",
+                  description: e.description,
+                  amount: Number(e.amount),
+                  currency: e.currency || "USD",
+                  date: e.expense_date || e.created_at,
+                  groupName: e.groups?.name,
+                  groupId: e.group_id,
+                  payerName: e.payer?.display_name,
+                  paidBy: e.paid_by,
+                })),
+                ...(recentSettlementsRes.data ?? []).map((s: any) => ({
+                  id: s.id,
+                  type: "settlement",
+                  description: `${s.from?.display_name} paid ${s.to?.display_name}`,
+                  amount: Number(s.amount),
+                  currency: "USD",
+                  date: s.created_at,
+                  groupName: s.groups?.name,
+                  groupId: s.group_id,
+                  fromUser: s.from_user,
+                  toUser: s.to_user,
+                })),
+              ];
+
+              activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+              setRecentActivity(activities.slice(0, 5));
+
+              // 5. Generate historical trend data for the last 6 months
+              const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+              const last6MonthsData = [];
+              for (let i = 5; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(1); // avoid end of month overflow
+                d.setMonth(d.getMonth() - i);
+                last6MonthsData.push({
+                  month: d.getMonth(),
+                  year: d.getFullYear(),
+                  label: monthNames[d.getMonth()],
+                  start: new Date(d.getFullYear(), d.getMonth(), 1).toISOString(),
+                  end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).toISOString(),
+                  spend: 0,
+                  netChange: 0,
+                });
               }
-            }
+              setMonthsLabels(last6MonthsData.map(m => m.label));
 
-            for (const exp of rangePaidRes.data ?? []) {
-              const date = new Date(exp.expense_date);
-              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-              if (mIdx !== -1) {
-                last6MonthsData[mIdx].netChange += Number(exp.amount);
+              const rangeStart = last6MonthsData[0].start;
+              const rangeEnd = last6MonthsData[5].end;
+
+              const [rangeSplitsRes, rangePaidRes, rangeReceivedSettleRes, rangePaidSettleRes] = await Promise.all([
+                supabase
+                  .from("expense_splits")
+                  .select("amount, expenses!inner(expense_date)")
+                  .eq("user_id", uuid)
+                  .in("expenses.group_id", groupIds)
+                  .gte("expenses.expense_date", rangeStart)
+                  .lte("expenses.expense_date", rangeEnd),
+                supabase
+                  .from("expenses")
+                  .select("amount, expense_date")
+                  .eq("paid_by", uuid)
+                  .in("group_id", groupIds)
+                  .gte("expense_date", rangeStart)
+                  .lte("expense_date", rangeEnd),
+                supabase
+                  .from("settlements")
+                  .select("amount, created_at")
+                  .eq("to_user", uuid)
+                  .in("group_id", groupIds)
+                  .gte("created_at", rangeStart)
+                  .lte("created_at", rangeEnd),
+                supabase
+                  .from("settlements")
+                  .select("amount, created_at")
+                  .eq("from_user", uuid)
+                  .in("group_id", groupIds)
+                  .gte("created_at", rangeStart)
+                  .lte("created_at", rangeEnd),
+              ]);
+
+              for (const split of (rangeSplitsRes.data ?? []) as any[]) {
+                const date = new Date(split.expenses?.expense_date);
+                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+                if (mIdx !== -1) {
+                  last6MonthsData[mIdx].spend += Number(split.amount);
+                  last6MonthsData[mIdx].netChange -= Number(split.amount);
+                }
               }
-            }
 
-            for (const settle of rangeReceivedSettleRes.data ?? []) {
-              const date = new Date(settle.created_at);
-              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-              if (mIdx !== -1) {
-                last6MonthsData[mIdx].netChange += Number(settle.amount);
+              for (const exp of rangePaidRes.data ?? []) {
+                const date = new Date(exp.expense_date);
+                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+                if (mIdx !== -1) {
+                  last6MonthsData[mIdx].netChange += Number(exp.amount);
+                }
               }
-            }
 
-            for (const settle of rangePaidSettleRes.data ?? []) {
-              const date = new Date(settle.created_at);
-              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-              if (mIdx !== -1) {
-                last6MonthsData[mIdx].netChange -= Number(settle.amount);
+              for (const settle of rangeReceivedSettleRes.data ?? []) {
+                const date = new Date(settle.created_at);
+                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+                if (mIdx !== -1) {
+                  last6MonthsData[mIdx].netChange += Number(settle.amount);
+                }
               }
-            }
 
-            setChartMonthlySpend(last6MonthsData.map(m => m.spend));
-            setChartMonthlyNet(last6MonthsData.map(m => m.netChange));
+              for (const settle of rangePaidSettleRes.data ?? []) {
+                const date = new Date(settle.created_at);
+                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+                if (mIdx !== -1) {
+                  last6MonthsData[mIdx].netChange -= Number(settle.amount);
+                }
+              }
+
+              setChartMonthlySpend(last6MonthsData.map(m => m.spend));
+              setChartMonthlyNet(last6MonthsData.map(m => m.netChange));
+            } else {
+              // Reset if no groups
+              setGroups([]);
+              setActiveGroupsCount(0);
+              setTotalBalance(0);
+              setThisMonthSpending(0);
+              setRecentActivity([]);
+              setChartMonthlySpend([0, 0, 0, 0, 0, 0]);
+              setChartMonthlyNet([0, 0, 0, 0, 0, 0]);
+            }
+          } catch (e) {
+            console.error("Dashboard data fetch failed:", e);
+          } finally {
+            setLoading(false);
           }
-        } catch (e) {
-          console.error("Dashboard data fetch failed:", e);
-        } finally {
-          setLoading(false);
-        }
+        };
+
+        // Initial data load
+        await fetchDashboardData();
+
+        // 6. Set up Supabase Realtime channel to listen for database changes
+        supabaseChannel = supabase
+          .channel("dashboard-realtime-changes")
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "expenses" },
+            () => {
+              fetchDashboardData();
+            }
+          )
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "settlements" },
+            () => {
+              fetchDashboardData();
+            }
+          )
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "group_members" },
+            () => {
+              fetchDashboardData();
+            }
+          )
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "expense_splits" },
+            () => {
+              fetchDashboardData();
+            }
+          )
+          .subscribe();
       } else {
         router.push("/login");
       }
     });
-    return () => unsub();
+
+    return () => {
+      unsub();
+      if (supabaseChannel) {
+        supabase.removeChannel(supabaseChannel);
+      }
+    };
   }, [router]);
 
   // ── Time-based greeting ─────────────────────────────────────
