@@ -1,6 +1,5 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
-
 // Deterministic UUID generator to map Firebase string UID -> valid Postgres UUID
 export function deterministicUuid(str: string): string {
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
@@ -19,10 +18,8 @@ export function deterministicUuid(str: string): string {
                
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
-
 export async function createClient() {
   const cookieStore = await cookies();
-
   const client = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -48,11 +45,9 @@ export async function createClient() {
       },
     }
   );
-
   const firebaseUid = cookieStore.get("firebase_uid")?.value;
   const firebaseEmail = cookieStore.get("firebase_email")?.value ?? null;
   const firebaseDisplayName = cookieStore.get("firebase_display_name")?.value ?? null;
-
   if (firebaseUid) {
     const uuid = deterministicUuid(firebaseUid);
     const user = {
@@ -62,12 +57,10 @@ export async function createClient() {
         display_name: firebaseDisplayName,
       },
     };
-
     (client.auth as any).getUser = async () => ({
       data: { user },
       error: null,
     });
-
     (client.auth as any).getSession = async () => ({
       data: {
         session: {
@@ -77,6 +70,5 @@ export async function createClient() {
       error: null,
     });
   }
-
   return client;
 }

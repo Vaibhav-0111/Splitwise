@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const firebaseUserId = request.cookies.get("firebase_uid")?.value;
   const pathname = request.nextUrl.pathname;
 
