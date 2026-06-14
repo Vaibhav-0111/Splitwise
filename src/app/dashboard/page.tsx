@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
+import { createClient, deterministicUuid } from "@/lib/supabase/client";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -14,13 +15,232 @@ export default function DashboardPage() {
   const [email, setEmail] = useState("");
   const [greeting, setGreeting] = useState("Good Evening");
 
-  // ── Auth check ──────────────────────────────────────────────
+  // Supabase states
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
+  const [userUuid, setUserUuid] = useState<string>("");
+  const [totalBalance, setTotalBalance] = useState<number>(0);
+  const [activeGroupsCount, setActiveGroupsCount] = useState<number>(0);
+  const [thisMonthSpending, setThisMonthSpending] = useState<number>(0);
+  const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [chartMonthlySpend, setChartMonthlySpend] = useState<number[]>([0, 0, 0, 0, 0, 0]);
+  const [chartMonthlyNet, setChartMonthlyNet] = useState<number[]>([0, 0, 0, 0, 0, 0]);
+  const [monthsLabels, setMonthsLabels] = useState<string[]>(["Jan", "Feb", "Mar", "Apr", "May", "Jun"]);
+
+  // Modal states
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalActionType, setModalActionType] = useState<"expense" | "settle" | "import">("expense");
+
+  // ── Auth check and dynamic data fetching ──────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        const uid = user.uid;
         setDisplayName(user.displayName || user.email?.split("@")[0] || "User");
         setEmail(user.email || "");
-        setLoading(false);
+
+        const supabase = createClient();
+        const uuid = deterministicUuid(uid);
+        setUserUuid(uuid);
+
+        try {
+          // 1. Fetch groups/memberships the user belongs to
+          const { data: memberships, error: membershipsError } = await supabase
+            .from("group_members")
+            .select("group_id, groups(id, name, created_at)")
+            .eq("user_id", uuid);
+
+          if (membershipsError) throw membershipsError;
+
+          const userGroups = (memberships ?? [])
+            .map((m: any) => m.groups)
+            .filter(Boolean);
+
+          setGroups(userGroups);
+          setActiveGroupsCount(userGroups.length);
+
+          const groupIds = userGroups.map((g: any) => g.id);
+
+          if (groupIds.length > 0) {
+            // 2. Fetch balances per group
+            const balancesMap: Record<string, number> = {};
+            for (const id of groupIds) balancesMap[id] = 0;
+
+            const [paidRes, owedRes, receivedRes, paidSettleRes] = await Promise.all([
+              supabase.from("expenses").select("group_id, amount").eq("paid_by", uuid).in("group_id", groupIds),
+              supabase
+                .from("expense_splits")
+                .select("amount, expenses!inner(group_id)")
+                .eq("user_id", uuid)
+                .in("expenses.group_id", groupIds),
+              supabase.from("settlements").select("group_id, amount").eq("to_user", uuid).in("group_id", groupIds),
+              supabase.from("settlements").select("group_id, amount").eq("from_user", uuid).in("group_id", groupIds),
+            ]);
+
+            for (const row of paidRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
+            for (const row of (owedRes.data ?? []) as any[]) {
+              const gid = row.expenses?.group_id;
+              if (gid) balancesMap[gid] -= Number(row.amount);
+            }
+            for (const row of receivedRes.data ?? []) balancesMap[row.group_id] += Number(row.amount);
+            for (const row of paidSettleRes.data ?? []) balancesMap[row.group_id] -= Number(row.amount);
+
+            // Sum all net balances
+            const sumBalance = Object.values(balancesMap).reduce((sum, bal) => sum + bal, 0);
+            setTotalBalance(sumBalance);
+
+            // 3. Fetch current month's spending
+            const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+            const { data: monthlySplits, error: monthlyError } = await supabase
+              .from("expense_splits")
+              .select("amount, expenses!inner(expense_date)")
+              .eq("user_id", uuid)
+              .gte("expenses.expense_date", startOfMonth);
+
+            if (monthlyError) throw monthlyError;
+
+            const sumSpending = (monthlySplits ?? []).reduce((sum: number, s: any) => sum + Number(s.amount), 0);
+            setThisMonthSpending(sumSpending);
+
+            // 4. Fetch recent activities (top 5 recent expenses/settlements across user's groups)
+            const [recentExpensesRes, recentSettlementsRes] = await Promise.all([
+              supabase
+                .from("expenses")
+                .select("id, description, amount, currency, expense_date, created_at, group_id, paid_by, groups(name), payer:profiles!expenses_paid_by_fkey(display_name)")
+                .in("group_id", groupIds)
+                .order("created_at", { ascending: false })
+                .limit(5),
+              supabase
+                .from("settlements")
+                .select("id, amount, note, created_at, group_id, from_user, to_user, groups(name), from:profiles!settlements_from_user_fkey(display_name), to:profiles!settlements_to_user_fkey(display_name)")
+                .in("group_id", groupIds)
+                .order("created_at", { ascending: false })
+                .limit(5)
+            ]);
+
+            const activities = [
+              ...(recentExpensesRes.data ?? []).map((e: any) => ({
+                id: e.id,
+                type: "expense",
+                description: e.description,
+                amount: Number(e.amount),
+                currency: e.currency || "USD",
+                date: e.expense_date || e.created_at,
+                groupName: e.groups?.name,
+                groupId: e.group_id,
+                payerName: e.payer?.display_name,
+                paidBy: e.paid_by,
+              })),
+              ...(recentSettlementsRes.data ?? []).map((s: any) => ({
+                id: s.id,
+                type: "settlement",
+                description: `${s.from?.display_name} paid ${s.to?.display_name}`,
+                amount: Number(s.amount),
+                currency: "USD",
+                date: s.created_at,
+                groupName: s.groups?.name,
+                groupId: s.group_id,
+                fromUser: s.from_user,
+                toUser: s.to_user,
+              })),
+            ];
+
+            activities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            setRecentActivity(activities.slice(0, 5));
+
+            // 5. Generate historical trend data for the last 6 months
+            const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const last6MonthsData = [];
+            for (let i = 5; i >= 0; i--) {
+              const d = new Date();
+              d.setDate(1); // avoid end of month overflow
+              d.setMonth(d.getMonth() - i);
+              last6MonthsData.push({
+                month: d.getMonth(),
+                year: d.getFullYear(),
+                label: monthNames[d.getMonth()],
+                start: new Date(d.getFullYear(), d.getMonth(), 1).toISOString(),
+                end: new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999).toISOString(),
+                spend: 0,
+                netChange: 0,
+              });
+            }
+            setMonthsLabels(last6MonthsData.map(m => m.label));
+
+            const rangeStart = last6MonthsData[0].start;
+            const rangeEnd = last6MonthsData[5].end;
+
+            const [rangeSplitsRes, rangePaidRes, rangeReceivedSettleRes, rangePaidSettleRes] = await Promise.all([
+              supabase
+                .from("expense_splits")
+                .select("amount, expenses!inner(expense_date)")
+                .eq("user_id", uuid)
+                .in("expenses.group_id", groupIds)
+                .gte("expenses.expense_date", rangeStart)
+                .lte("expenses.expense_date", rangeEnd),
+              supabase
+                .from("expenses")
+                .select("amount, expense_date")
+                .eq("paid_by", uuid)
+                .in("group_id", groupIds)
+                .gte("expense_date", rangeStart)
+                .lte("expense_date", rangeEnd),
+              supabase
+                .from("settlements")
+                .select("amount, created_at")
+                .eq("to_user", uuid)
+                .in("group_id", groupIds)
+                .gte("created_at", rangeStart)
+                .lte("created_at", rangeEnd),
+              supabase
+                .from("settlements")
+                .select("amount, created_at")
+                .eq("from_user", uuid)
+                .in("group_id", groupIds)
+                .gte("created_at", rangeStart)
+                .lte("created_at", rangeEnd),
+            ]);
+
+            for (const split of (rangeSplitsRes.data ?? []) as any[]) {
+              const date = new Date(split.expenses?.expense_date);
+              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+              if (mIdx !== -1) {
+                last6MonthsData[mIdx].spend += Number(split.amount);
+                last6MonthsData[mIdx].netChange -= Number(split.amount);
+              }
+            }
+
+            for (const exp of rangePaidRes.data ?? []) {
+              const date = new Date(exp.expense_date);
+              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+              if (mIdx !== -1) {
+                last6MonthsData[mIdx].netChange += Number(exp.amount);
+              }
+            }
+
+            for (const settle of rangeReceivedSettleRes.data ?? []) {
+              const date = new Date(settle.created_at);
+              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+              if (mIdx !== -1) {
+                last6MonthsData[mIdx].netChange += Number(settle.amount);
+              }
+            }
+
+            for (const settle of rangePaidSettleRes.data ?? []) {
+              const date = new Date(settle.created_at);
+              const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
+              if (mIdx !== -1) {
+                last6MonthsData[mIdx].netChange -= Number(settle.amount);
+              }
+            }
+
+            setChartMonthlySpend(last6MonthsData.map(m => m.spend));
+            setChartMonthlyNet(last6MonthsData.map(m => m.netChange));
+          }
+        } catch (e) {
+          console.error("Dashboard data fetch failed:", e);
+        } finally {
+          setLoading(false);
+        }
       } else {
         router.push("/login");
       }
@@ -146,16 +366,22 @@ export default function DashboardPage() {
     {
       id: "stat-balance",
       icon: "💰",
-      value: "$0.00",
+      value: totalBalance === 0 
+        ? "$0.00" 
+        : `${totalBalance > 0 ? "+" : "-"}$${Math.abs(totalBalance).toFixed(2)}`,
       label: "Total Balance",
       accent: "from-emerald-500/20 to-emerald-500/0",
       border: "border-emerald-500/20",
-      text: "text-emerald-400",
+      text: totalBalance > 0 
+        ? "text-emerald-400" 
+        : totalBalance < 0 
+        ? "text-rose-400" 
+        : "text-slate-400",
     },
     {
       id: "stat-groups",
       icon: "👥",
-      value: "0",
+      value: activeGroupsCount.toString(),
       label: "Active Groups",
       accent: "from-violet-500/20 to-violet-500/0",
       border: "border-violet-500/20",
@@ -164,7 +390,7 @@ export default function DashboardPage() {
     {
       id: "stat-month",
       icon: "📊",
-      value: "$0.00",
+      value: `$${thisMonthSpending.toFixed(2)}`,
       label: "This Month",
       accent: "from-cyan-500/20 to-cyan-500/0",
       border: "border-cyan-500/20",
@@ -203,6 +429,54 @@ export default function DashboardPage() {
       href: "#",
     },
   ];
+
+  // Helper calculations for the trend chart
+  const getSvgCoordinates = (data: number[]) => {
+    const minVal = Math.min(...data, 0);
+    const maxVal = Math.max(...data, 100);
+    const range = maxVal - minVal || 1;
+    const minY = 30;
+    const maxY = 170;
+    
+    return data.map((val, idx) => {
+      const x = 50 + idx * 140;
+      const y = maxY - ((val - minVal) / range) * (maxY - minY);
+      return { x, y };
+    });
+  };
+
+  const spendCoords = getSvgCoordinates(chartMonthlySpend);
+  const netCoords = getSvgCoordinates(chartMonthlyNet);
+
+  const spendPath = spendCoords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+  const spendArea = spendCoords.length > 0 ? `${spendPath} L 750 210 L 50 210 Z` : "";
+
+  const netPath = netCoords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x} ${c.y}`).join(" ");
+  const netArea = netCoords.length > 0 ? `${netPath} L 750 210 L 50 210 Z` : "";
+
+  const handleActionClick = (e: React.MouseEvent, actionId: string) => {
+    if (actionId === "action-create-group") return;
+    
+    e.preventDefault();
+    const type = actionId === "action-add-expense" 
+      ? "expense" 
+      : actionId === "action-settle" 
+      ? "settle" 
+      : "import";
+
+    if (groups.length === 0) {
+      alert("You need to create a group first to perform this action.");
+      router.push("/groups");
+    } else if (groups.length === 1) {
+      const groupId = groups[0].id;
+      if (type === "expense") router.push(`/groups/${groupId}/expenses/new`);
+      else if (type === "settle") router.push(`/groups/${groupId}/settle`);
+      else if (type === "import") router.push(`/groups/${groupId}/import`);
+    } else {
+      setModalActionType(type);
+      setModalOpen(true);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-mesh relative overflow-hidden">
@@ -376,10 +650,10 @@ export default function DashboardPage() {
               <line x1="0" y1="210" x2="800" y2="210" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
 
               {/* Horizontal labels and vertical grids */}
-              {["Jan", "Feb", "Mar", "Apr", "May", "Jun"].map((m, idx) => {
+              {monthsLabels.map((m, idx) => {
                 const x = 50 + idx * 140;
                 return (
-                  <g key={m}>
+                  <g key={`${m}-${idx}`}>
                     <line x1={x} y1="0" x2={x} y2="210" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
                     <text x={x} y="218" fill="rgba(148,163,184,0.6)" fontSize="10" textAnchor="middle" fontFamily="Space Grotesk">
                       {m}
@@ -389,53 +663,53 @@ export default function DashboardPage() {
               })}
 
               {/* Shared Expenses Area and Path */}
-              {/* Data values mapping: 120, 280, 190, 510, 430, 680 -> scale factor height 210 */}
-              <path
-                d="M 50 170 Q 190 130 190 130 T 330 150 T 470 70 T 610 90 T 750 30"
-                fill="none"
-                stroke="#f59e0b"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                className="path-animated-1"
-              />
-              <path
-                d="M 50 170 Q 190 130 190 130 T 330 150 T 470 70 T 610 90 T 750 30 L 750 210 L 50 210 Z"
-                fill="url(#shared-grad)"
-                className="opacity-70"
-              />
+              {spendCoords.length > 0 && (
+                <>
+                  <path
+                    d={spendPath}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth="3.5"
+                    strokeLinecap="round"
+                    className="path-animated-1"
+                  />
+                  <path
+                    d={spendArea}
+                    fill="url(#shared-grad)"
+                    className="opacity-70"
+                  />
+                </>
+              )}
 
               {/* Net Balance Area and Path */}
-              {/* Data values mapping: 0, 40, -20, 110, 90, 150 */}
-              <path
-                d="M 50 210 Q 190 180 190 180 T 330 200 T 470 140 T 610 150 T 750 110"
-                fill="none"
-                stroke="#06b6d4"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                className="path-animated-2"
-              />
-              <path
-                d="M 50 210 Q 190 180 190 180 T 330 200 T 470 140 T 610 150 T 750 110 L 750 210 L 50 210 Z"
-                fill="url(#balance-grad)"
-                className="opacity-70"
-              />
+              {netCoords.length > 0 && (
+                <>
+                  <path
+                    d={netPath}
+                    fill="none"
+                    stroke="#06b6d4"
+                    strokeWidth="3.5"
+                    strokeLinecap="round"
+                    className="path-animated-2"
+                  />
+                  <path
+                    d={netArea}
+                    fill="url(#balance-grad)"
+                    className="opacity-70"
+                  />
+                </>
+              )}
 
               {/* Interactive nodes/circles */}
               {/* Shared Expenses dots */}
-              <circle cx="50" cy="170" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="190" cy="130" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="330" cy="150" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="470" cy="70" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="610" cy="90" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="750" cy="30" r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
+              {spendCoords.map((c, idx) => (
+                <circle key={`spend-${idx}`} cx={c.x} cy={c.y} r="4" fill="#030712" stroke="#f59e0b" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
+              ))}
 
               {/* Net Balance dots */}
-              <circle cx="50" cy="210" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="190" cy="180" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="330" cy="200" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="470" cy="140" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="610" cy="150" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
-              <circle cx="750" cy="110" r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
+              {netCoords.map((c, idx) => (
+                <circle key={`net-${idx}`} cx={c.x} cy={c.y} r="4" fill="#030712" stroke="#06b6d4" strokeWidth="2.5" className="hover:scale-150 transition-all duration-300" />
+              ))}
             </svg>
           </div>
         </section>
@@ -452,6 +726,7 @@ export default function DashboardPage() {
                 key={a.id}
                 id={a.id}
                 href={a.href}
+                onClick={(e) => handleActionClick(e, a.id)}
                 className="quick-action animate-stagger text-center"
                 style={{ animationDelay: `${600 + i * 100}ms` }}
               >
@@ -479,32 +754,122 @@ export default function DashboardPage() {
             <div className="flex-1 neon-line" />
           </div>
 
-          {/* Empty state */}
-          <div className="glass-card rounded-2xl p-12 flex flex-col items-center justify-center text-center">
-            <div
-              className="text-6xl mb-6 animate-float-slow"
-              role="img"
-              aria-label="No activity"
-            >
-              📋
+          {recentActivity.length === 0 ? (
+            /* Empty state */
+            <div className="glass-card rounded-2xl p-12 flex flex-col items-center justify-center text-center">
+              <div
+                className="text-6xl mb-6 animate-float-slow"
+                role="img"
+                aria-label="No activity"
+              >
+                📋
+              </div>
+              <h3 className="text-xl font-display font-semibold text-white mb-2">
+                No activity yet
+              </h3>
+              <p className="text-slate-400 max-w-sm mb-8">
+                Create a group and start tracking expenses with friends.
+                Your recent transactions will appear here.
+              </p>
+              <Link
+                id="cta-create-group"
+                href="/groups"
+                className="btn-primary text-sm"
+              >
+                <span>✨</span>
+                Create Your First Group
+              </Link>
             </div>
-            <h3 className="text-xl font-display font-semibold text-white mb-2">
-              No activity yet
-            </h3>
-            <p className="text-slate-400 max-w-sm mb-8">
-              Create a group and start tracking expenses with friends.
-              Your recent transactions will appear here.
-            </p>
-            <Link
-              id="cta-create-group"
-              href="/groups"
-              className="btn-primary text-sm"
-            >
-              <span>✨</span>
-              Create Your First Group
-            </Link>
-          </div>
+          ) : (
+            <div className="glass-card rounded-2xl divide-y divide-slate-800/50 overflow-hidden">
+              {recentActivity.map((activity) => (
+                <Link
+                  key={activity.id}
+                  href={`/groups/${activity.groupId}${
+                    activity.type === "expense" ? `/expenses/${activity.id}` : "/settle"
+                  }`}
+                  className="flex items-center justify-between p-4 hover:bg-slate-800/20 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">
+                      {activity.type === "expense" ? "💳" : "🤝"}
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium text-slate-200">
+                        {activity.description}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {activity.groupName} · {new Date(activity.date).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span
+                      className={`text-sm font-semibold ${
+                        activity.type === "expense"
+                          ? activity.paidBy === userUuid
+                            ? "text-emerald-400"
+                            : "text-slate-400"
+                          : "text-emerald-400"
+                      }`}
+                    >
+                      {activity.type === "expense" ? (
+                        activity.paidBy === userUuid ? (
+                          `You paid $${activity.amount.toFixed(2)}`
+                        ) : (
+                          `${activity.payerName} paid $${activity.amount.toFixed(2)}`
+                        )
+                      ) : (
+                        `$${activity.amount.toFixed(2)}`
+                      )}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
         </section>
+
+        {/* ── Group Selector Modal ────────────────────────────── */}
+        {modalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <div className="glass-card w-full max-w-md p-6 rounded-2xl border border-slate-700/50 shadow-2xl relative">
+              <button
+                onClick={() => setModalOpen(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+              <h3 className="text-xl font-display font-semibold text-white mb-2">
+                Select Group
+              </h3>
+              <p className="text-sm text-slate-400 mb-6">
+                Choose a group to {modalActionType === "expense" ? "add an expense to" : modalActionType === "settle" ? "settle up in" : "import CSV for"}:
+              </p>
+              <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                {groups.map((g) => (
+                  <button
+                    key={g.id}
+                    onClick={() => {
+                      setModalOpen(false);
+                      if (modalActionType === "expense") router.push(`/groups/${g.id}/expenses/new`);
+                      else if (modalActionType === "settle") router.push(`/groups/${g.id}/settle`);
+                      else if (modalActionType === "import") router.push(`/groups/${g.id}/import`);
+                    }}
+                    className="w-full text-left p-4 rounded-xl bg-slate-800/30 hover:bg-slate-800/60 border border-slate-700/25 hover:border-amber-500/30 transition-all flex items-center justify-between group"
+                  >
+                    <span className="font-medium text-slate-200 group-hover:text-white transition-colors">
+                      {g.name}
+                    </span>
+                    <span className="text-slate-500 group-hover:text-amber-400 transition-colors">
+                      →
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Footer spacer ──────────────────────────────── */}
         <div className="h-8" />
