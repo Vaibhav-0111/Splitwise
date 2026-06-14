@@ -204,19 +204,28 @@ export default function DashboardPage() {
               ]);
 
               for (const split of (rangeSplitsRes.data ?? []) as any[]) {
-                const date = new Date(split.expenses?.expense_date);
-                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-                if (mIdx !== -1) {
-                  last6MonthsData[mIdx].spend += Number(split.amount);
-                  last6MonthsData[mIdx].netChange -= Number(split.amount);
+                const expense = Array.isArray(split.expenses) ? split.expenses[0] : split.expenses;
+                const dateParts = expense?.expense_date?.split("-");
+                if (dateParts && dateParts.length === 3) {
+                  const year = parseInt(dateParts[0], 10);
+                  const month = parseInt(dateParts[1], 10) - 1; // 0-indexed
+                  const mIdx = last6MonthsData.findIndex(m => m.month === month && m.year === year);
+                  if (mIdx !== -1) {
+                    last6MonthsData[mIdx].spend += Number(split.amount);
+                    last6MonthsData[mIdx].netChange -= Number(split.amount);
+                  }
                 }
               }
 
               for (const exp of rangePaidRes.data ?? []) {
-                const date = new Date(exp.expense_date);
-                const mIdx = last6MonthsData.findIndex(m => m.month === date.getMonth() && m.year === date.getFullYear());
-                if (mIdx !== -1) {
-                  last6MonthsData[mIdx].netChange += Number(exp.amount);
+                const dateParts = exp.expense_date?.split("-");
+                if (dateParts && dateParts.length === 3) {
+                  const year = parseInt(dateParts[0], 10);
+                  const month = parseInt(dateParts[1], 10) - 1;
+                  const mIdx = last6MonthsData.findIndex(m => m.month === month && m.year === year);
+                  if (mIdx !== -1) {
+                    last6MonthsData[mIdx].netChange += Number(exp.amount);
+                  }
                 }
               }
 

@@ -130,25 +130,57 @@ export default function AddExpenseForm({
 
     const splits = buildFinalSplits();
 
-    const { error: rpcError } = await supabase.rpc("create_expense_with_splits", {
-      p_group_id: groupId,
-      p_description: description.trim(),
-      p_amount: totalAmount,
-      p_currency: "USD",
-      p_paid_by: paidBy,
-      p_split_type: splitType,
-      p_splits: splits,
-    });
+    try {
+      // 1. Insert into public.expenses
+      const { data: expenseData, error: expenseError } = await supabase
+        .from("expenses")
+        .insert({
+          group_id: groupId,
+          description: description.trim(),
+          amount: totalAmount,
+          currency: "USD",
+          paid_by: paidBy,
+          created_by: currentUserId,
+          split_type: splitType,
+          expense_date: new Date().toISOString().split("T")[0],
+        })
+        .select("id")
+        .single();
 
-    setLoading(false);
+      if (expenseError) {
+        setError(expenseError.message);
+        setLoading(false);
+        return;
+      }
 
-    if (rpcError) {
-      setError(rpcError.message);
-      return;
+      // 2. Insert into public.expense_splits
+      const splitsToInsert = splits.map((s) => ({
+        expense_id: expenseData.id,
+        user_id: s.user_id,
+        amount: s.amount,
+        percentage: s.percentage,
+        shares: s.shares,
+      }));
+
+      const { error: splitsError } = await supabase
+        .from("expense_splits")
+        .insert(splitsToInsert);
+
+      if (splitsError) {
+        setError(splitsError.message);
+        // Transactional rollback simulation: delete the orphan expense
+        await supabase.from("expenses").delete().eq("id", expenseData.id);
+        setLoading(false);
+        return;
+      }
+
+      setLoading(false);
+      router.push(`/groups/${groupId}`);
+      router.refresh();
+    } catch (err: any) {
+      setError(err.message || "An unexpected error occurred.");
+      setLoading(false);
     }
-
-    router.push(`/groups/${groupId}`);
-    router.refresh();
   }
 
   return (

@@ -76,28 +76,72 @@ export default function CsvImportForm({
     let importedCount = 0;
     const failures: Anomaly[] = [];
 
+    // Get current user ID to populate created_by
+    const { data: { user } } = await supabase.auth.getUser();
+    const currentUserId = user?.id || importable[0]?.expense?.paid_by;
+
     for (const r of importable) {
       if (!r.expense) continue;
-      const { error: rpcError } = await supabase.rpc("create_expense_with_splits", {
-        p_group_id: groupId,
-        p_description: r.expense.description,
-        p_amount: r.expense.amount,
-        p_currency: r.expense.currency,
-        p_paid_by: r.expense.paid_by,
-        p_split_type: r.expense.split_type,
-        p_splits: r.expense.splits,
-        p_expense_date: r.expense.expense_date,
-      });
 
-      if (rpcError) {
+      try {
+        // 1. Insert into public.expenses
+        const { data: expenseData, error: expenseError } = await supabase
+          .from("expenses")
+          .insert({
+            group_id: groupId,
+            description: r.expense.description,
+            amount: r.expense.amount,
+            currency: r.expense.currency,
+            paid_by: r.expense.paid_by,
+            created_by: currentUserId,
+            split_type: r.expense.split_type,
+            expense_date: r.expense.expense_date,
+          })
+          .select("id")
+          .single();
+
+        if (expenseError) {
+          failures.push({
+            row: r.row,
+            type: "missing_field",
+            action: "skipped",
+            message: `Database error while inserting expense: ${expenseError.message}`,
+          });
+          continue;
+        }
+
+        // 2. Insert into public.expense_splits
+        const splitsToInsert = r.expense.splits.map((s: any) => ({
+          expense_id: expenseData.id,
+          user_id: s.user_id,
+          amount: s.amount,
+          percentage: s.percentage,
+          shares: s.shares,
+        }));
+
+        const { error: splitsError } = await supabase
+          .from("expense_splits")
+          .insert(splitsToInsert);
+
+        if (splitsError) {
+          failures.push({
+            row: r.row,
+            type: "missing_field",
+            action: "skipped",
+            message: `Database error while inserting splits: ${splitsError.message}`,
+          });
+          // Rollback orphan expense
+          await supabase.from("expenses").delete().eq("id", expenseData.id);
+        } else {
+          importedCount++;
+        }
+      } catch (err: any) {
         failures.push({
           row: r.row,
-          type: "missing_field", // generic bucket for DB-level failures
+          type: "missing_field",
           action: "skipped",
-          message: `Database error while inserting: ${rpcError.message}`,
+          message: `Unexpected error: ${err.message || err}`,
         });
-      } else {
-        importedCount++;
       }
     }
 
