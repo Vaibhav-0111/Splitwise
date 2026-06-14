@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
-import { validateRow, type MemberLookup, type RowResult, type Anomaly } from "@/lib/csvImport";
+import { validateRow, findMemberByName, parseSplitDetailPart, type MemberLookup, type RowResult, type Anomaly } from "@/lib/csvImport";
 
 const ANOMALY_LABELS: Record<string, string> = {
   missing_field: "Missing field",
@@ -37,6 +37,7 @@ export default function CsvImportForm({
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [virtualMembers, setVirtualMembers] = useState<MemberLookup[]>([]);
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -51,8 +52,79 @@ export default function CsvImportForm({
       skipEmptyLines: true,
       complete: (parsed) => {
         const seen = new Set<string>();
+        const localMembers = [...members];
+        const addedVirtualNames = new Set<string>();
+
+        parsed.data.forEach((row) => {
+          // 1. Paid by name
+          const paidByName = (row.paid_by ?? "").trim();
+          if (paidByName) {
+            const payerLower = paidByName.toLowerCase();
+            const existing = findMemberByName(paidByName, localMembers);
+            if (!existing && !addedVirtualNames.has(payerLower)) {
+              const virtualId = crypto.randomUUID();
+              const virtualEmail = `${paidByName.toLowerCase().replace(/[^a-z0-9]/g, "")}-${groupId.slice(0, 8)}@splitsy.temp`;
+              localMembers.push({
+                id: virtualId,
+                email: virtualEmail,
+                display_name: paidByName,
+                isVirtual: true,
+              });
+              addedVirtualNames.add(payerLower);
+            }
+          }
+
+          // 2. Split with names
+          const splitWithNames = (row.split_with ?? "")
+            .split(";")
+            .map((n) => n.trim())
+            .filter(Boolean);
+          splitWithNames.forEach((name) => {
+            const nameLower = name.toLowerCase();
+            const existing = findMemberByName(name, localMembers);
+            if (!existing && !addedVirtualNames.has(nameLower)) {
+              const virtualId = crypto.randomUUID();
+              const virtualEmail = `${name.toLowerCase().replace(/[^a-z0-9]/g, "")}-${groupId.slice(0, 8)}@splitsy.temp`;
+              localMembers.push({
+                id: virtualId,
+                email: virtualEmail,
+                display_name: name,
+                isVirtual: true,
+              });
+              addedVirtualNames.add(nameLower);
+            }
+          });
+
+          // 3. Split details names
+          const splitDetails = (row.split_details ?? "");
+          if (splitDetails) {
+            const parts = splitDetails.split(";").map((p) => p.trim()).filter(Boolean);
+            parts.forEach((part) => {
+              const parsedPart = parseSplitDetailPart(part);
+              if (parsedPart) {
+                const name = parsedPart.name;
+                const nameLower = name.toLowerCase();
+                const existing = findMemberByName(name, localMembers);
+                if (!existing && !addedVirtualNames.has(nameLower)) {
+                  const virtualId = crypto.randomUUID();
+                  const virtualEmail = `${name.toLowerCase().replace(/[^a-z0-9]/g, "")}-${groupId.slice(0, 8)}@splitsy.temp`;
+                  localMembers.push({
+                    id: virtualId,
+                    email: virtualEmail,
+                    display_name: name,
+                    isVirtual: true,
+                  });
+                  addedVirtualNames.add(nameLower);
+                }
+              }
+            });
+          }
+        });
+
+        setVirtualMembers(localMembers.filter((m) => m.isVirtual));
+
         const rows: RowResult[] = parsed.data.map((row, i) =>
-          validateRow(row, i + 1, members, seen)
+          validateRow(row, i + 1, localMembers, seen)
         );
         setResults(rows);
         setParsing(false);
@@ -72,6 +144,47 @@ export default function CsvImportForm({
     if (!results || !fileName) return;
     setImporting(true);
     setError(null);
+
+    // 0. Auto-create virtual members in the database
+    for (const vm of virtualMembers) {
+      try {
+        const { error: pErr } = await supabase
+          .from("profiles")
+          .upsert({
+            id: vm.id,
+            email: vm.email,
+            display_name: vm.display_name,
+            created_at: new Date().toISOString()
+          });
+          
+        if (pErr) {
+          setError(`Failed to create profile for member "${vm.display_name}": ${pErr.message}`);
+          setImporting(false);
+          return;
+        }
+        
+        const { error: gmErr } = await supabase
+          .from("group_members")
+          .insert({
+            group_id: groupId,
+            user_id: vm.id,
+            role: "member"
+          });
+          
+        if (gmErr) {
+          // Ignore duplicate member key errors
+          if (gmErr.code !== "23505") {
+            setError(`Failed to add member "${vm.display_name}" to group: ${gmErr.message}`);
+            setImporting(false);
+            return;
+          }
+        }
+      } catch (err: any) {
+        setError(`Failed to register virtual member "${vm.display_name}": ${err.message || err}`);
+        setImporting(false);
+        return;
+      }
+    }
 
     let importedCount = 0;
     const failures: Anomaly[] = [];

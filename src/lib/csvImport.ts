@@ -61,12 +61,13 @@ export interface MemberLookup {
   id: string;
   email: string;
   display_name: string;
+  isVirtual?: boolean;
 }
 
 const SUPPORTED_CURRENCY = "USD";
 const TOLERANCE = 0.01;
 
-function parseCsvDate(value: string): string {
+export function parseCsvDate(value: string): string {
   value = (value ?? "").trim();
   if (!value) return "";
   
@@ -121,7 +122,7 @@ function parseCsvDate(value: string): string {
   return "";
 }
 
-function findMemberByName(name: string, members: MemberLookup[]): MemberLookup | undefined {
+export function findMemberByName(name: string, members: MemberLookup[]): MemberLookup | undefined {
   const cleanName = name.trim().toLowerCase();
   if (!cleanName) return undefined;
   
@@ -143,7 +144,7 @@ function findMemberByName(name: string, members: MemberLookup[]): MemberLookup |
   return undefined;
 }
 
-function parseSplitDetailPart(part: string): { name: string; value: number } | null {
+export function parseSplitDetailPart(part: string): { name: string; value: number } | null {
   part = part.trim();
   if (!part) return null;
   
@@ -231,6 +232,13 @@ export function validateRow(
       message: `paid_by "${paidByName}" does not match any member of this group.`,
     });
     return { row: rowNumber, status: "skipped", anomalies };
+  } else if (payer.isVirtual) {
+    anomalies.push({
+      row: rowNumber,
+      type: "unknown_payer",
+      action: "corrected",
+      message: `paid_by "${paidByName}" is not in the group; will be automatically added to the group.`,
+    });
   }
 
   // ---- 5. Date ----
@@ -268,11 +276,15 @@ export function validateRow(
 
   const participants: MemberLookup[] = [];
   const unknownNames: string[] = [];
+  const virtualNames: string[] = [];
   for (const name of splitWithNames) {
     const m = findMemberByName(name, members);
     if (m) {
       if (!participants.some((p) => p.id === m.id)) {
         participants.push(m);
+        if (m.isVirtual) {
+          virtualNames.push(m.display_name);
+        }
       }
     } else {
       unknownNames.push(name);
@@ -285,6 +297,15 @@ export function validateRow(
       type: "unknown_participant",
       action: "corrected",
       message: `Participant(s) not in this group were dropped from the split: ${unknownNames.join(", ")}.`,
+    });
+  }
+
+  if (virtualNames.length > 0) {
+    anomalies.push({
+      row: rowNumber,
+      type: "unknown_participant",
+      action: "corrected",
+      message: `Participant(s) not in the group will be automatically added: ${virtualNames.join(", ")}.`,
     });
   }
 
