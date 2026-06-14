@@ -66,25 +66,102 @@ export interface MemberLookup {
 const SUPPORTED_CURRENCY = "USD";
 const TOLERANCE = 0.01;
 
-function isValidDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+function parseCsvDate(value: string): string {
+  value = (value ?? "").trim();
+  if (!value) return "";
+  
+  // Case 1: YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  
+  // Case 2: DD-MM-YYYY or MM-DD-YYYY
+  let match = value.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (match) {
+    const day = parseInt(match[1], 10);
+    const month = parseInt(match[2], 10);
+    const year = parseInt(match[3], 10);
+    
+    const monthStr = String(month).padStart(2, "0");
+    const dayStr = String(day).padStart(2, "0");
+    return `${year}-${monthStr}-${dayStr}`;
+  }
+
+  // Case 3: Month-DD or DD-Month
+  const monthMap: Record<string, string> = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
+  };
+  
+  match = value.match(/^([a-zA-Z]+)[-/](\d{1,2})$/) || value.match(/^(\d{1,2})[-/]([a-zA-Z]+)$/);
+  if (match) {
+    let monthName = "";
+    let day = 0;
+    if (isNaN(Number(match[1]))) {
+      monthName = match[1].toLowerCase().slice(0, 3);
+      day = parseInt(match[2], 10);
+    } else {
+      day = parseInt(match[1], 10);
+      monthName = match[2].toLowerCase().slice(0, 3);
+    }
+    const monthVal = monthMap[monthName];
+    if (monthVal) {
+      const year = 2026; // Default to 2026 as per our database records
+      const dayStr = String(day).padStart(2, "0");
+      return `${year}-${monthVal}-${dayStr}`;
+    }
+  }
+
+  // Fallback: try native Date parsing
   const d = new Date(value);
-  return !isNaN(d.getTime());
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().slice(0, 10);
+  }
+  
+  return "";
+}
+
+function findMemberByName(name: string, members: MemberLookup[]): MemberLookup | undefined {
+  const cleanName = name.trim().toLowerCase();
+  if (!cleanName) return undefined;
+  
+  // Try exact match first
+  let match = members.find((m) => m.display_name.trim().toLowerCase() === cleanName);
+  if (match) return match;
+  
+  // Try matching email prefix
+  match = members.find((m) => m.email.split("@")[0].trim().toLowerCase() === cleanName);
+  if (match) return match;
+
+  // Try fuzzy matching (start-with or contains)
+  match = members.find((m) => {
+    const mName = m.display_name.trim().toLowerCase();
+    return mName.startsWith(cleanName) || cleanName.startsWith(mName);
+  });
+  if (match) return match;
+  
+  return undefined;
+}
+
+function parseSplitDetailPart(part: string): { name: string; value: number } | null {
+  part = part.trim();
+  if (!part) return null;
+  
+  const lastSpaceIdx = part.lastIndexOf(" ");
+  if (lastSpaceIdx === -1) return null;
+  
+  const name = part.substring(0, lastSpaceIdx).trim();
+  const valueStr = part.substring(lastSpaceIdx + 1).replace(/%/g, "").trim();
+  const value = parseFloat(valueStr);
+  
+  if (isNaN(value)) return null;
+  return { name, value };
 }
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/**
- * Validates and transforms a single CSV row into an ImportableExpense,
- * or marks it as skipped, recording every anomaly encountered along
- * the way (whether the row was skipped, corrected, or had a value
- * defaulted).
- *
- * `seenRowKeys` is a mutable Set shared across all rows in the file,
- * used to detect exact-duplicate rows.
- */
 export function validateRow(
   raw: Record<string, string>,
   rowNumber: number,
@@ -92,17 +169,17 @@ export function validateRow(
   seenRowKeys: Set<string>
 ): RowResult {
   const anomalies: Anomaly[] = [];
-  const emailToMember = new Map(members.map((m) => [m.email.trim().toLowerCase(), m]));
 
   // ---- 1. Required fields ----
-  const description = (raw.description ?? "").trim();
+  let description = (raw.description ?? "").trim();
   const amountRaw = (raw.amount ?? "").trim();
-  const paidByEmail = (raw.paid_by_email ?? "").trim().toLowerCase();
+  const paidByName = (raw.paid_by ?? "").trim();
+  const notes = (raw.notes ?? "").trim();
 
   const missing: string[] = [];
   if (!description) missing.push("description");
   if (!amountRaw) missing.push("amount");
-  if (!paidByEmail) missing.push("paid_by_email");
+  if (!paidByName) missing.push("paid_by");
 
   if (missing.length > 0) {
     anomalies.push({
@@ -114,8 +191,14 @@ export function validateRow(
     return { row: rowNumber, status: "skipped", anomalies };
   }
 
-  // ---- 2. Amount validity ----
-  const amount = Number(amountRaw);
+  // Append notes to description if present
+  if (notes) {
+    description = `${description} (${notes})`;
+  }
+
+  // ---- 2. Amount validity (handle commas in quotes) ----
+  const cleanAmountRaw = amountRaw.replace(/,/g, "");
+  const amount = Number(cleanAmountRaw);
   if (!Number.isFinite(amount) || amount <= 0) {
     anomalies.push({
       row: rowNumber,
@@ -127,44 +210,44 @@ export function validateRow(
   }
 
   // ---- 3. Currency ----
-  let currency = (raw.currency ?? "").trim().toUpperCase() || SUPPORTED_CURRENCY;
-  if (currency !== SUPPORTED_CURRENCY) {
+  let currency = (raw.currency ?? "").trim().toUpperCase();
+  if (!currency) {
     anomalies.push({
       row: rowNumber,
       type: "unsupported_currency",
       action: "defaulted",
-      message: `Currency "${currency}" is not supported (USD only); defaulted to USD. Amount was NOT converted.`,
+      message: `Currency is missing; defaulted to INR.`,
     });
-    currency = SUPPORTED_CURRENCY;
+    currency = "INR";
   }
 
   // ---- 4. Payer must be a known group member ----
-  const payer = emailToMember.get(paidByEmail);
+  const payer = findMemberByName(paidByName, members);
   if (!payer) {
     anomalies.push({
       row: rowNumber,
       type: "unknown_payer",
       action: "skipped",
-      message: `paid_by_email "${paidByEmail}" does not match any member of this group.`,
+      message: `paid_by "${paidByName}" does not match any member of this group.`,
     });
     return { row: rowNumber, status: "skipped", anomalies };
   }
 
   // ---- 5. Date ----
-  let expenseDate = (raw.expense_date ?? "").trim();
-  if (!isValidDate(expenseDate)) {
+  const dateRaw = (raw.date ?? "").trim();
+  let expenseDate = parseCsvDate(dateRaw);
+  if (!expenseDate) {
     const today = new Date().toISOString().slice(0, 10);
     anomalies.push({
       row: rowNumber,
       type: "invalid_date",
       action: "defaulted",
-      message: `expense_date "${expenseDate}" is not a valid YYYY-MM-DD date; defaulted to today (${today}).`,
+      message: `date "${dateRaw}" is not a valid date format; defaulted to today (${today}).`,
     });
     expenseDate = today;
   }
 
   // ---- 6. Duplicate detection ----
-  // Exact duplicates are defined as same description + amount + payer + date.
   const dedupeKey = `${description.toLowerCase()}|${amount}|${payer.id}|${expenseDate}`;
   if (seenRowKeys.has(dedupeKey)) {
     anomalies.push({
@@ -178,32 +261,33 @@ export function validateRow(
   seenRowKeys.add(dedupeKey);
 
   // ---- 7. Participants ----
-  const participantEmailsRaw = (raw.participants ?? "")
+  const splitWithNames = (raw.split_with ?? "")
     .split(";")
-    .map((e) => e.trim().toLowerCase())
+    .map((n) => n.trim())
     .filter(Boolean);
 
   const participants: MemberLookup[] = [];
-  const unknownEmails: string[] = [];
-  for (const email of participantEmailsRaw) {
-    const m = emailToMember.get(email);
-    if (m) participants.push(m);
-    else unknownEmails.push(email);
+  const unknownNames: string[] = [];
+  for (const name of splitWithNames) {
+    const m = findMemberByName(name, members);
+    if (m) {
+      if (!participants.some((p) => p.id === m.id)) {
+        participants.push(m);
+      }
+    } else {
+      unknownNames.push(name);
+    }
   }
 
-  if (unknownEmails.length > 0) {
+  if (unknownNames.length > 0) {
     anomalies.push({
       row: rowNumber,
       type: "unknown_participant",
       action: "corrected",
-      message: `Participant(s) not in this group were dropped from the split: ${unknownEmails.join(", ")}.`,
+      message: `Participant(s) not in this group were dropped from the split: ${unknownNames.join(", ")}.`,
     });
   }
 
-  // If payer wasn't listed as a participant but participants list is
-  // otherwise non-empty, we leave it as-is (payer doesn't have to be
-  // a participant). If the participants list ends up empty, fall back
-  // to splitting between the payer alone.
   if (participants.length === 0) {
     anomalies.push({
       row: rowNumber,
@@ -216,12 +300,10 @@ export function validateRow(
 
   // ---- 8. Split type ----
   const validSplitTypes = ["equal", "unequal", "percentage", "shares"] as const;
-  let splitType = (raw.split_type ?? "").trim().toLowerCase() as (typeof validSplitTypes)[number];
-  const splitValuesRaw = (raw.split_values ?? "")
-    .split(";")
-    .map((v) => v.trim())
-    .filter((v) => v.length > 0);
-
+  let splitTypeRaw = (raw.split_type ?? "").trim().toLowerCase();
+  if (splitTypeRaw === "share") splitTypeRaw = "shares";
+  
+  let splitType = splitTypeRaw as (typeof validSplitTypes)[number];
   if (!validSplitTypes.includes(splitType)) {
     anomalies.push({
       row: rowNumber,
@@ -232,7 +314,33 @@ export function validateRow(
     splitType = "equal";
   }
 
+  // Parse split details if not equal
+  const parsedDetailsMap = new Map<string, number>();
+  if (splitType !== "equal" && raw.split_details) {
+    const parts = raw.split_details.split(";").map((p) => p.trim()).filter(Boolean);
+    for (const part of parts) {
+      const parsed = parseSplitDetailPart(part);
+      if (parsed) {
+        const m = findMemberByName(parsed.name, members);
+        if (m) {
+          parsedDetailsMap.set(m.id, parsed.value);
+        }
+      }
+    }
+  }
+
+  let hasMismatch = false;
+  if (splitType !== "equal") {
+    for (const p of participants) {
+      if (!parsedDetailsMap.has(p.id)) {
+        hasMismatch = true;
+        break;
+      }
+    }
+  }
+
   // ---- 9. Compute splits per split_type, with validation ----
+  const TOLERANCE = 0.01;
   let splits: ImportableExpense["splits"];
 
   if (splitType === "equal") {
@@ -244,12 +352,12 @@ export function validateRow(
       shares: null,
     }));
   } else if (splitType === "unequal") {
-    if (splitValuesRaw.length !== participants.length) {
+    if (hasMismatch) {
       anomalies.push({
         row: rowNumber,
         type: "mismatched_split_values",
         action: "defaulted",
-        message: `split_values count (${splitValuesRaw.length}) does not match participant count (${participants.length}); defaulted to an equal split.`,
+        message: `split_details does not contain values for all participants; defaulted to an equal split.`,
       });
       const share = amount / participants.length;
       splits = participants.map((p) => ({
@@ -259,7 +367,7 @@ export function validateRow(
         shares: null,
       }));
     } else {
-      const values = splitValuesRaw.map((v) => Number(v) || 0);
+      const values = participants.map((p) => parsedDetailsMap.get(p.id) || 0);
       const sum = values.reduce((s, v) => s + v, 0);
       if (Math.abs(sum - amount) > TOLERANCE) {
         anomalies.push({
@@ -278,12 +386,12 @@ export function validateRow(
       }));
     }
   } else if (splitType === "percentage") {
-    if (splitValuesRaw.length !== participants.length) {
+    if (hasMismatch) {
       anomalies.push({
         row: rowNumber,
         type: "mismatched_split_values",
         action: "defaulted",
-        message: `split_values count (${splitValuesRaw.length}) does not match participant count (${participants.length}); defaulted to an equal split.`,
+        message: `split_details does not contain percentage values for all participants; defaulted to an equal split.`,
       });
       const share = amount / participants.length;
       splits = participants.map((p) => ({
@@ -293,7 +401,7 @@ export function validateRow(
         shares: null,
       }));
     } else {
-      const values = splitValuesRaw.map((v) => Number(v) || 0);
+      const values = participants.map((p) => parsedDetailsMap.get(p.id) || 0);
       const sum = values.reduce((s, v) => s + v, 0);
       if (Math.abs(sum - 100) > TOLERANCE) {
         anomalies.push({
@@ -316,12 +424,12 @@ export function validateRow(
     }
   } else {
     // shares
-    if (splitValuesRaw.length !== participants.length) {
+    if (hasMismatch) {
       anomalies.push({
         row: rowNumber,
         type: "mismatched_split_values",
         action: "defaulted",
-        message: `split_values count (${splitValuesRaw.length}) does not match participant count (${participants.length}); defaulted to an equal split (1 share each).`,
+        message: `split_details does not contain share counts for all participants; defaulted to an equal split (1 share each).`,
       });
       const share = amount / participants.length;
       splits = participants.map((p) => ({
@@ -331,7 +439,7 @@ export function validateRow(
         shares: 1,
       }));
     } else {
-      const values = splitValuesRaw.map((v) => Number(v) || 0);
+      const values = participants.map((p) => parsedDetailsMap.get(p.id) || 0);
       const totalShares = values.reduce((s, v) => s + v, 0);
       splits = participants.map((p, i) => ({
         user_id: p.id,

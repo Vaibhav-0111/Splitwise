@@ -180,8 +180,8 @@ export default function CsvImportForm({
             className="input file:mr-3 file:rounded-md file:border-0 file:bg-primary file:text-on-primary file:px-3 file:py-1.5 file:font-medium file:cursor-pointer cursor-pointer"
           />
           <p className="text-xs text-muted-foreground mt-2">
-            Expected columns: <code className="font-mono-data">description, amount, currency,
-            paid_by_email, expense_date, split_type, participants, split_values</code>.
+            Expected columns: <code className="font-mono-data">date, description, paid_by,
+            amount, currency, split_type, split_with, split_details, notes</code>.
             See <code className="font-mono-data">sample-data/expenses_import_sample.csv</code> for
             an example with intentional anomalies.
           </p>
